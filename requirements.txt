@@ -36,3 +36,7 @@ pytest-cov==4.1.0
 
 # Monitoring & Logging
 python-json-logger==4.0.0
+
+# Data Handling
+pandas>=2.0.0
+openpyxl>=3.1.0

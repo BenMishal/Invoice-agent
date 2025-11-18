@@ -1,6 +1,7 @@
 """End-to-end test with sample invoices"""
 import os
 from agents.orchestrator import InvoiceOrchestrator
+from utils.excel_exporter import export_to_excel
 
 def test_invoice_processing():
     print("\n" + "="*60)
@@ -54,14 +55,18 @@ def test_invoice_processing():
                 print(result_str)
                 if len(str(result.get('result', ''))) > 500:
                     print("... (truncated)")
-            
+
         except Exception as e:
             print(f"\n❌ Error processing {pdf_file}:")
             print(f"   {str(e)}")
     
-    print("\n" + "="*60)
-    print("END-TO-END TEST COMPLETED")
-    print("="*60)
+     # Export to Excel
+        excel_file = export_to_excel(result, "processed_invoices.xlsx")
+        if excel_file:
+            print(f"\n📊 Exported to Excel: {excel_file}")
+            print("\n" + "="*60)
+            print("END-TO-END TEST COMPLETED")
+            print("="*60)
 
 if __name__ == "__main__":
     test_invoice_processing()
