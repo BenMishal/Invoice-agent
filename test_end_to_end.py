@@ -1,4 +1,7 @@
-"""End-to-end test with handwriting support"""
+from dotenv import load_dotenv
+# Load environment variables
+load_dotenv()
+
 import os
 from agents.orchestrator import InvoiceOrchestrator
 from utils.excel_exporter import export_to_excel
