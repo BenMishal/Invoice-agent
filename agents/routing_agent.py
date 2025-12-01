@@ -13,7 +13,7 @@ class RoutingAgent:
     def __init__(self):
         self.model_name = os.getenv("DEFAULT_MODEL", "gemini-2.0-flash-exp")
         logger.info(f"✅ Initializing Routing Agent")
-        genai.configure(***REMOVED***os.getenv("GEMINI_API_KEY"))
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         self.model = genai.GenerativeModel(self.model_name)
         logger.info("✅ Routing Agent created")
     

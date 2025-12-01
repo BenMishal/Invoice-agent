@@ -88,7 +88,7 @@ All agents use **Google Gemini** via the official `google-generativeai` Python S
 
 The project uses the **direct Gemini API** (not ADK) for reliability and production‑style control:
 
-- Configured via `google.generativeai.configure(***REMOVED***...)`.
+- Configured via `google.generativeai.configure(api_key=...)`.
 - Models created with `genai.GenerativeModel(model_name)`.
 - Content generated with `model.generate_content(...)`.
 - Vision (handwritten invoices) supported by passing images and prompts together.
