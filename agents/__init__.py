@@ -1,18 +1,13 @@
+"""Agents package for invoice processing"""
 
-"""Invoice Processing Agents Package"""
+try:
+    from agents.capture_agent import CaptureAgent
+except ImportError as e:
+    print(f"Warning: Could not import CaptureAgent: {e}")
 
-from agents.orchestrator import InvoiceOrchestrator
-from agents.capture_agent import InvoiceCaptureAgent
-from agents.validation_agent import ValidationAgent
-from agents.routing_agent import RoutingAgent
-from agents.optimizer_agent import OptimizationAgent
-from agents.exception_handler import ExceptionHandlerAgent
+try:
+    from agents.orchestrator import InvoiceOrchestrator
+except ImportError as e:
+    print(f"Warning: Could not import InvoiceOrchestrator: {e}")
 
-__all__ = [
-    "InvoiceOrchestrator",
-    "InvoiceCaptureAgent",
-    "ValidationAgent",
-    "RoutingAgent",
-    "OptimizationAgent",
-    "ExceptionHandlerAgent",
-]
+__all__ = ['CaptureAgent', 'InvoiceOrchestrator']

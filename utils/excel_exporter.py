@@ -1,247 +1,241 @@
-"""Excel Export Utility for Invoice Processing"""
+"""Excel export utilities for processed invoices"""
 import pandas as pd
-from datetime import datetime
-import os
 import json
-import logging
 import re
+from datetime import datetime
+import logging
 
 logger = logging.getLogger(__name__)
 
-def parse_invoice_result(result_text: str) -> dict:
-    """Parse the JSON result from invoice processing with improved extraction"""
+def clean_extracted_data(data: dict) -> dict:
+    """Clean extracted data by removing placeholder values"""
+    cleaned = {}
+    
+    placeholder_values = [
+        'Not Found', 'Not found', 'TBD', 'To be extracted', 'To be determined',
+        'YYYY-MM-DD', 'yyyy-mm-dd', 'DD-MM-YYYY', 'mm/dd/yyyy',
+        'INVOICE_NUMBER_EXTRACTED', 'INVOICE_DATE_EXTRACTED', 'CURRENCY_EXTRACTED',
+        'TOTAL_AMOUNT_EXTRACTED', 'PAYMENT_TERMS_EXTRACTED',
+        'To be determined by OCR/extraction',
+        'TBD - to be extracted', 'pending', 'null', 'None'
+    ]
+    
+    for key, value in data.items():
+        if not value:
+            cleaned[key] = ''
+        elif isinstance(value, str):
+            # Check if it's a placeholder
+            if any(placeholder.lower() in str(value).lower() for placeholder in placeholder_values):
+                cleaned[key] = ''
+            else:
+                cleaned[key] = value.strip()
+        elif isinstance(value, (int, float)):
+            cleaned[key] = value if value != 0 else ''
+        else:
+            cleaned[key] = value
+    
+    return cleaned
+
+def extract_invoice_data_from_json(json_str: str) -> dict:
+    """Extract invoice data from various JSON structures"""
     try:
-        if not result_text:
-            return {}
-            
-        # Try to find JSON in markdown code blocks first
-        json_match = re.search(r'``````', result_text, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(1)
-            data = json.loads(json_str)
-            return data
-        
-        # Try to find JSON without code blocks
-        json_match = re.search(r'(\{[^{}]*"stages"[^{}]*\{.*?\}[^{}]*\})', result_text, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(1)
-            # Clean up any markdown artifacts
-            json_str = json_str.replace('``````', '')
-            data = json.loads(json_str)
-            return data
-            
-        # Last resort: try to parse the entire result as JSON
-        if result_text.strip().startswith('{'):
-            data = json.loads(result_text)
-            return data
-            
-        return {}
-        
-    except json.JSONDecodeError as e:
-        logger.warning(f"JSON decode error: {e}")
-        # Try to extract key fields with regex as fallback
-        return extract_with_regex(result_text)
-    except Exception as e:
-        logger.warning(f"Could not parse result: {e}")
-        return {}
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        logger.warning(f"JSON decode error, attempting fallback extraction")
+        return extract_with_regex(json_str)
+    
+    # Initialize result
+    result = {
+        'vendor_name': '',
+        'invoice_number': '',
+        'invoice_date': '',
+        'due_date': '',
+        'total_amount': '',
+        'tax_amount': '',
+        'currency': '',
+        'payment_terms': ''
+    }
+    
+    # Handle different JSON structures returned by different Gemini prompts
+    
+    # Structure 1: Direct fields at top level
+    if 'invoice_number' in data:
+        result['invoice_number'] = data.get('invoice_number', '')
+    
+    # Structure 2: Nested under 'extracted_data'
+    if 'extracted_data' in data:
+        extracted = data['extracted_data']
+        result.update({
+            'vendor_name': extracted.get('vendor_name', '') or extracted.get('vendor', ''),
+            'invoice_number': extracted.get('invoice_number', ''),
+            'invoice_date': extracted.get('invoice_date', ''),
+            'due_date': extracted.get('due_date', ''),
+            'total_amount': extracted.get('total_amount', extracted.get('amount', '')),
+            'tax_amount': extracted.get('tax', extracted.get('tax_amount', '')),
+            'currency': extracted.get('currency', 'USD'),
+            'payment_terms': extracted.get('payment_terms', '')
+        })
+    
+    # Structure 3: Nested under 'data' or 'details'
+    elif 'data' in data:
+        data_section = data['data']
+        result.update({
+            'vendor_name': data_section.get('vendor_name', '') or data_section.get('vendor', ''),
+            'invoice_number': data_section.get('invoice_number', ''),
+            'invoice_date': data_section.get('invoice_date', ''),
+            'due_date': data_section.get('due_date', ''),
+            'total_amount': data_section.get('total_amount', data_section.get('amount', '')),
+            'tax_amount': data_section.get('tax', ''),
+            'currency': data_section.get('currency', 'USD'),
+            'payment_terms': data_section.get('payment_terms', '')
+        })
+    
+    # Structure 4: Nested under stages -> capture
+    elif 'stages' in data and 'capture' in data['stages']:
+        capture = data['stages']['capture'].get('extracted_data', {})
+        result.update({
+            'vendor_name': capture.get('vendor_name', '') or capture.get('vendor', ''),
+            'invoice_number': capture.get('invoice_number', ''),
+            'invoice_date': capture.get('invoice_date', ''),
+            'due_date': capture.get('due_date', ''),
+            'total_amount': capture.get('total_amount', capture.get('amount', '')),
+            'tax_amount': capture.get('tax', ''),
+            'currency': capture.get('currency', 'USD'),
+            'payment_terms': capture.get('payment_terms', '')
+        })
+    
+    # Fallback: Try to extract from any top-level fields
+    else:
+        result.update({
+            'vendor_name': data.get('vendor_name', '') or data.get('vendor', ''),
+            'invoice_number': data.get('invoice_number', ''),
+            'invoice_date': data.get('invoice_date', ''),
+            'due_date': data.get('due_date', ''),
+            'total_amount': data.get('total_amount', data.get('amount', '')),
+            'tax_amount': data.get('tax', data.get('tax_amount', '')),
+            'currency': data.get('currency', 'USD'),
+            'payment_terms': data.get('payment_terms', '')
+        })
+    
+    # Convert amounts to numbers if they're strings
+    for amount_field in ['total_amount', 'tax_amount']:
+        if result[amount_field]:
+            try:
+                # Extract numeric value if it's a string with text
+                amount_str = str(result[amount_field])
+                # Extract numbers
+                numbers = re.findall(r'\d+\.?\d*', amount_str)
+                if numbers:
+                    result[amount_field] = float(numbers[0])
+                else:
+                    result[amount_field] = ''
+            except (ValueError, AttributeError):
+                result[amount_field] = ''
+    
+    # Clean up extracted data
+    result = clean_extracted_data(result)
+    
+    return result
 
 def extract_with_regex(text: str) -> dict:
     """Extract invoice data using regex patterns as fallback"""
-    data = {}
+    result = {
+        'vendor_name': '',
+        'invoice_number': '',
+        'invoice_date': '',
+        'due_date': '',
+        'total_amount': '',
+        'tax_amount': '',
+        'currency': 'USD',
+        'payment_terms': ''
+    }
     
-    # Extract invoice number
-    inv_match = re.search(r'"invoice_number":\s*"([^"]+)"', text)
-    if inv_match:
-        data['invoice_number'] = inv_match.group(1)
+    patterns = {
+        'invoice_number': [
+            r'["\']invoice[_\s]*number["\']?\s*:?\s*["\']?([A-Z0-9\-]+)["\']?',
+            r'Invoice\s*#?:?\s*([A-Z0-9\-]+)',
+            r'INV[A-Z]*[-\s]?(\d{4}[-\s]\d{4})'
+        ],
+        'vendor_name': [
+            r'["\']vendor[_\s]*name["\']?\s*:?\s*["\']?([^"\'}\n]+)["\']?',
+            r'From:\s*([^\n]+)',
+            r'Bill\s*From:\s*([^\n]+)'
+        ],
+        'invoice_date': [
+            r'["\']invoice[_\s]*date["\']?\s*:?\s*["\']?(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})["\']?',
+            r'Date:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})',
+            r'Dated:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})'
+        ],
+        'due_date': [
+            r'["\']due[_\s]*date["\']?\s*:?\s*["\']?(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})["\']?',
+            r'Due:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})',
+            r'Due\s*Date:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})'
+        ],
+        'total_amount': [
+            r'["\']total[_\s]*amount["\']?\s*:?\s*["\']?(\d+\.?\d*)["\']?',
+            r'["\']amount["\']?\s*:?\s*["\']?(\d+\.?\d*)["\']?',
+            r'Total:\s*\$?(\d+\.?\d*)',
+            r'Amount:\s*\$?(\d+\.?\d*)'
+        ],
+        'currency': [
+            r'["\']currency["\']?\s*:?\s*["\']?([A-Z]{3})["\']?'
+        ]
+    }
     
-    # Extract vendor name
-    vendor_match = re.search(r'"vendor_name":\s*"([^"]+)"', text)
-    if vendor_match:
-        data['vendor_name'] = vendor_match.group(1)
+    for field, pattern_list in patterns.items():
+        for pattern in pattern_list:
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if match:
+                result[field] = match.group(1).strip()
+                break
     
-    # Extract dates
-    date_match = re.search(r'"invoice_date":\s*"([^"]+)"', text)
-    if date_match:
-        data['invoice_date'] = date_match.group(1)
-    
-    due_match = re.search(r'"due_date":\s*"([^"]+)"', text)
-    if due_match:
-        data['due_date'] = due_match.group(1)
-    
-    # Extract amount (try multiple patterns)
-    amount_patterns = [
-        r'"total_amount":\s*(\d+\.?\d*)',
-        r'"amount_total":\s*(\d+\.?\d*)',
-        r'"amount":\s*(\d+\.?\d*)'
-    ]
-    for pattern in amount_patterns:
-        amount_match = re.search(pattern, text)
-        if amount_match:
-            data['total_amount'] = float(amount_match.group(1))
-            break
-    
-    # Extract currency
-    curr_match = re.search(r'"currency":\s*"([^"]+)"', text)
-    if curr_match:
-        data['currency'] = curr_match.group(1)
-    
-    # Extract tax
-    tax_match = re.search(r'"tax_amount":\s*(\d+\.?\d*)', text)
-    if tax_match:
-        data['tax_amount'] = float(tax_match.group(1))
-    
-    # Extract payment terms
-    terms_match = re.search(r'"payment_terms":\s*"([^"]+)"', text)
-    if terms_match:
-        data['payment_terms'] = terms_match.group(1)
-    
-    return data
+    return result
 
-def extract_invoice_data(invoice_result: dict) -> dict:
-    """Extract invoice data from various possible locations in result"""
-    
-    # Parse the result text
-    parsed_data = {}
-    if 'result' in invoice_result:
-        parsed_data = parse_invoice_result(invoice_result['result'])
-    
-    # Try to get data from stages
-    invoice_data = {}
-    if parsed_data and 'stages' in parsed_data:
-        # Look through stages for extracted data
-        for stage in parsed_data.get('stages', []):
-            if 'data_extracted' in stage:
-                invoice_data.update(stage['data_extracted'])
-            elif 'stage_name' in stage and stage['stage_name'] == 'CAPTURE':
-                invoice_data.update(stage.get('data_extracted', {}))
-    
-    # If no data from stages, try direct extraction from parsed_data
-    if not invoice_data and parsed_data:
-        invoice_data = parsed_data
-    
-    # Fallback: try regex extraction on raw result
-    if not invoice_data and 'result' in invoice_result:
-        invoice_data = extract_with_regex(invoice_result['result'])
-    
-    return invoice_data
-
-def export_to_excel(invoice_result: dict, output_path: str = "processed_invoices.xlsx") -> str:
-    """
-    Export processed invoice data to Excel with improved data extraction
-    
-    Args:
-        invoice_result: Result from orchestrator.process_invoice()
-        output_path: Path to save Excel file
-        
-    Returns:
-        Path to saved Excel file
-    """
+def export_to_excel(result: dict, filename: str = "processed_invoices.xlsx") -> str:
+    """Export processed invoice to Excel file"""
     try:
-        # Extract invoice data using improved parser
-        invoice_data = extract_invoice_data(invoice_result)
-        
-        # Get vendor name from result or data
-        vendor_name = invoice_result.get('vendor_name', '')
-        if not vendor_name:
-            vendor_name = invoice_data.get('vendor_name', 'Unknown')
-        
-        # Create DataFrame with invoice data
-        df = pd.DataFrame([{
-            'Processed Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'Status': invoice_result.get('status', 'unknown'),
-            'PDF Path': invoice_result.get('pdf_path', ''),
-            'Vendor Name': vendor_name,
-            'Invoice Number': invoice_data.get('invoice_number', 'N/A'),
-            'Invoice Date': invoice_data.get('invoice_date', 'N/A'),
-            'Due Date': invoice_data.get('due_date', 'N/A'),
-            'Amount': invoice_data.get('total_amount', invoice_data.get('amount_total', invoice_data.get('amount', 0))),
-            'Currency': invoice_data.get('currency', 'USD'),
-            'Tax Amount': invoice_data.get('tax_amount', 0),
-            'Payment Terms': invoice_data.get('payment_terms', 'N/A'),
-            'Model Used': invoice_result.get('model_used', 'unknown'),
-            'Processing Time': '~2 seconds'
-        }])
-        
-        # Append to existing file or create new
-        if os.path.exists(output_path):
-            try:
-                existing_df = pd.read_excel(output_path, engine='openpyxl')
-                df = pd.concat([existing_df, df], ignore_index=True)
-                logger.info(f"✅ Appended to existing Excel file")
-            except Exception as e:
-                logger.warning(f"Could not read existing file, creating new: {e}")
+        # Extract invoice data
+        if result.get('result'):
+            result_str = str(result['result'])
+            invoice_data = extract_invoice_data_from_json(result_str)
         else:
-            logger.info(f"✅ Creating new Excel file")
+            invoice_data = {}
         
-        # Save to Excel with auto-adjusted column widths
-        writer = pd.ExcelWriter(output_path, engine='openpyxl')
-        df.to_excel(writer, index=False, sheet_name='Processed Invoices')
+        # Create row data
+        row_data = {
+            'Processed Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Status': result.get('status', 'unknown'),
+            'PDF Path': result.get('invoice_path', ''),
+            'Vendor Name': invoice_data.get('vendor_name', 'Unknown'),
+            'Invoice Number': invoice_data.get('invoice_number', ''),
+            'Invoice Date': invoice_data.get('invoice_date', ''),
+            'Due Date': invoice_data.get('due_date', ''),
+            'Amount': invoice_data.get('total_amount', ''),
+            'Currency': invoice_data.get('currency', 'USD'),
+            'Tax Amount': invoice_data.get('tax_amount', ''),
+            'Payment Terms': invoice_data.get('payment_terms', ''),
+            'Model Used': result.get('model_used', 'unknown'),
+            'Processing Time': result.get('processing_time', '')
+        }
         
-        # Auto-adjust column widths
-        worksheet = writer.sheets['Processed Invoices']
-        for idx, col in enumerate(df.columns):
-            max_length = max(
-                df[col].astype(str).apply(len).max(),
-                len(col)
-            ) + 2
-            worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+        # Create DataFrame
+        df = pd.DataFrame([row_data])
         
-        writer.close()
+        # Check if file exists
+        try:
+            existing_df = pd.read_excel(filename)
+            # Append to existing
+            df = pd.concat([existing_df, df], ignore_index=True)
+            logger.info("✅ Appended to existing Excel file")
+        except FileNotFoundError:
+            logger.info("✅ Creating new Excel file")
         
-        logger.info(f"✅ Exported to Excel: {output_path}")
-        return output_path
+        # Export to Excel
+        df.to_excel(filename, index=False, sheet_name='Processed Invoices')
+        logger.info(f"✅ Exported to Excel: {filename}")
         
-    except Exception as e:
-        logger.error(f"❌ Error exporting to Excel: {e}", exc_info=True)
-        return None
-
-def create_excel_report(invoices: list, output_path: str = "invoice_report.xlsx") -> str:
-    """
-    Create comprehensive Excel report from multiple invoices
-    
-    Args:
-        invoices: List of invoice results
-        output_path: Path to save report
-        
-    Returns:
-        Path to saved report
-    """
-    try:
-        rows = []
-        for inv in invoices:
-            invoice_data = extract_invoice_data(inv)
-            vendor_name = inv.get('vendor_name', invoice_data.get('vendor_name', 'Unknown'))
-            
-            rows.append({
-                'Date Processed': datetime.now().strftime('%Y-%m-%d'),
-                'Status': inv.get('status'),
-                'Vendor': vendor_name,
-                'Invoice #': invoice_data.get('invoice_number', 'N/A'),
-                'Amount': invoice_data.get('total_amount', invoice_data.get('amount_total', 0)),
-                'Currency': invoice_data.get('currency', 'USD'),
-                'Due Date': invoice_data.get('due_date', 'N/A')
-            })
-        
-        df = pd.DataFrame(rows)
-        
-        # Save with formatting
-        writer = pd.ExcelWriter(output_path, engine='openpyxl')
-        df.to_excel(writer, index=False, sheet_name='Invoice Report')
-        
-        # Auto-adjust column widths
-        worksheet = writer.sheets['Invoice Report']
-        for idx, col in enumerate(df.columns):
-            max_length = max(
-                df[col].astype(str).apply(len).max(),
-                len(col)
-            ) + 2
-            worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 30)
-        
-        writer.close()
-        
-        logger.info(f"✅ Created report: {output_path}")
-        return output_path
+        return filename
         
     except Exception as e:
-        logger.error(f"❌ Error creating report: {e}", exc_info=True)
-        return None
+        logger.error(f"❌ Error exporting to Excel: {str(e)}")
+        raise
